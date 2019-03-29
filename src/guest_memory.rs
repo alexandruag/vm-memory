@@ -27,14 +27,12 @@
 //!     - map a request address to a GuestMemoryRegion object and relay the request to it.
 //!     - handle cases where an access request spanning two or more GuestMemoryRegion objects.
 
-use std::convert::From;
 use std::fmt::{self, Display};
 use std::io::{self, Read, Write};
 use std::ops::{BitAnd, BitOr};
 
 use address::{Address, AddressValue};
 use bytes::Bytes;
-use volatile_memory;
 
 static MAX_ACCESS_CHUNK: usize = 4096;
 
@@ -50,23 +48,6 @@ pub enum Error {
     PartialBuffer { expected: usize, completed: usize },
     /// Requested backend address is out of range.
     InvalidBackendAddress,
-}
-
-impl From<volatile_memory::Error> for Error {
-    fn from(e: volatile_memory::Error) -> Self {
-        match e {
-            volatile_memory::Error::OutOfBounds { .. } => Error::InvalidBackendAddress,
-            volatile_memory::Error::Overflow { .. } => Error::InvalidBackendAddress,
-            volatile_memory::Error::IOError(e) => Error::IOError(e),
-            volatile_memory::Error::PartialBuffer {
-                expected,
-                completed,
-            } => Error::PartialBuffer {
-                expected,
-                completed,
-            },
-        }
-    }
 }
 
 /// Result of guest memory operations

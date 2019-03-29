@@ -54,6 +54,24 @@ pub enum MmapError {
     MemoryRegionOverlap,
 }
 
+// Convert from volatile_memory::Error into guest_memory::Error
+impl From<volatile_memory::Error> for Error {
+    fn from(e: volatile_memory::Error) -> Self {
+        match e {
+            volatile_memory::Error::OutOfBounds { .. } => Error::InvalidBackendAddress,
+            volatile_memory::Error::Overflow { .. } => Error::InvalidBackendAddress,
+            volatile_memory::Error::IOError(e) => Error::IOError(e),
+            volatile_memory::Error::PartialBuffer {
+                expected,
+                completed,
+            } => Error::PartialBuffer {
+                expected,
+                completed,
+            },
+        }
+    }
+}
+
 // Send and Sync aren't automatically inherited for the raw address pointer.
 // Accessing that pointer is only done through the stateless interface which
 // allows the object to be shared by multiple threads without a decrease in
