@@ -480,8 +480,10 @@ impl GuestMemoryMmap {
     }
 }
 
-impl GuestMemory for GuestMemoryMmap {
+impl<'a> GuestMemory<'a> for GuestMemoryMmap {
     type R = GuestRegionMmap;
+
+    type I = std::slice::Iter<'a, GuestRegionMmap>;
 
     fn num_regions(&self) -> usize {
         self.regions.len()
@@ -494,6 +496,10 @@ impl GuestMemory for GuestMemoryMmap {
             }
         }
         None
+    }
+
+    fn iter(&'a self) -> Self::I {
+        self.regions.iter()
     }
 
     fn with_regions<F, E>(&self, cb: F) -> std::result::Result<(), E>
@@ -798,6 +804,15 @@ mod tests {
         assert_eq!(regions, iterated_regions);
         assert_eq!(gm.clone().regions[0].guest_base, regions[0].0);
         assert_eq!(gm.clone().regions[1].guest_base, regions[1].0);
+
+        let mut size = 0;
+        let mut count = 0;
+        for region in gm.iter() {
+            size += region.len();
+            count += 1;
+        }
+        assert_eq!(size, 0x800);
+        assert_eq!(count, 2);
     }
 
     #[test]
