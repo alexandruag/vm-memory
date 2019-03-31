@@ -502,26 +502,6 @@ impl<'a> GuestMemory<'a> for GuestMemoryMmap {
         self.regions.iter()
     }
 
-    fn with_regions<F, E>(&self, cb: F) -> std::result::Result<(), E>
-    where
-        F: Fn(usize, &Self::R) -> std::result::Result<(), E>,
-    {
-        for (index, region) in self.regions.iter().enumerate() {
-            cb(index, region)?;
-        }
-        Ok(())
-    }
-
-    fn with_regions_mut<F, E>(&self, mut cb: F) -> std::result::Result<(), E>
-    where
-        F: FnMut(usize, &Self::R) -> std::result::Result<(), E>,
-    {
-        for (index, region) in self.regions.iter().enumerate() {
-            cb(index, region)?;
-        }
-        Ok(())
-    }
-
     fn map_and_fold<F, G, T>(&self, init: T, mapf: F, foldf: G) -> T
     where
         F: Fn((usize, &Self::R)) -> T,
@@ -787,23 +767,7 @@ mod tests {
             (GuestAddress(0x0), region_size),
             (GuestAddress(0x1000), region_size),
         ];
-        let mut iterated_regions = Vec::new();
         let gm = GuestMemoryMmap::new(&regions).unwrap();
-
-        let res: Result<()> = gm.with_regions(|_, region| {
-            assert_eq!(region.len(), region_size as GuestUsize);
-            Ok(())
-        });
-        assert!(res.is_ok());
-
-        let res: Result<()> = gm.with_regions_mut(|_, region| {
-            iterated_regions.push((region.start_addr(), region.len() as usize));
-            Ok(())
-        });
-        assert!(res.is_ok());
-        assert_eq!(regions, iterated_regions);
-        assert_eq!(gm.clone().regions[0].guest_base, regions[0].0);
-        assert_eq!(gm.clone().regions[1].guest_base, regions[1].0);
 
         let mut size = 0;
         let mut count = 0;

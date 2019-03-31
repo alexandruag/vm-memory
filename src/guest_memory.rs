@@ -182,18 +182,6 @@ pub trait GuestMemory<'a> {
     /// Gets an iterator over the entries in the collection.
     fn iter(&'a self) -> Self::I;
 
-    /// Perform the specified action on each region.
-    /// It only walks children of current region and do not step into sub regions.
-    fn with_regions<F, E>(&self, cb: F) -> std::result::Result<(), E>
-    where
-        F: Fn(usize, &Self::R) -> std::result::Result<(), E>;
-
-    /// Perform the specified action on each region mutably.
-    /// It only walks children of current region and do not step into sub regions.
-    fn with_regions_mut<F, E>(&self, cb: F) -> std::result::Result<(), E>
-    where
-        F: FnMut(usize, &Self::R) -> std::result::Result<(), E>;
-
     /// Applies two functions, specified as callbacks, on the inner memory regions.
     ///
     /// # Arguments
