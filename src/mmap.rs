@@ -22,6 +22,7 @@
 
 use libc;
 use std::io::{self, Read, Write};
+use std::marker::PhantomData;
 use std::ops::Deref;
 use std::os::unix::io::AsRawFd;
 use std::ptr::null_mut;
@@ -413,8 +414,9 @@ impl GuestMemoryRegion for GuestRegionMmap {
 
 /// Tracks memory regions allocated/mapped for the guest in the current process.
 #[derive(Clone, Debug)]
-pub struct GuestMemoryMmap {
+pub struct GuestMemoryMmap<'a> {
     regions: Arc<Vec<GuestRegionMmap>>,
+    phantom: PhantomData<&'a ()>,
 }
 
 impl GuestMemoryMmap {
@@ -446,6 +448,7 @@ impl GuestMemoryMmap {
 
         Ok(Self {
             regions: Arc::new(regions),
+            phantom: PhantomData,
         })
     }
 
@@ -469,6 +472,7 @@ impl GuestMemoryMmap {
 
         Ok(Self {
             regions: Arc::new(ranges),
+            phantom: PhantomData,
         })
     }
 
@@ -480,9 +484,9 @@ impl GuestMemoryMmap {
     }
 }
 
-impl<'a> GuestMemory<'a> for GuestMemoryMmap {
+impl<'a> GuestMemory for GuestMemoryMmap<'a> {
     type R = GuestRegionMmap;
-
+    type Item = &'a GuestRegionMmap;
     type I = std::slice::Iter<'a, GuestRegionMmap>;
 
     fn num_regions(&self) -> usize {

@@ -29,7 +29,7 @@
 
 use std::fmt::{self, Display};
 use std::io::{self, Read, Write};
-use std::ops::{BitAnd, BitOr};
+use std::ops::{BitAnd, BitOr, Deref};
 
 use address::{Address, AddressValue};
 use bytes::Bytes;
@@ -166,12 +166,15 @@ pub trait GuestMemoryRegion: Bytes<MemoryRegionAddress, E = Error> {
 /// - handle cases where an access request spanning two or more GuestMemoryRegion objects.
 ///
 /// Note: all regions in a GuestMemory object must not intersect with each other.
-pub trait GuestMemory<'a> {
+pub trait GuestMemory {
     /// Type of objects hosted by the collection.
-    type R: 'a + GuestMemoryRegion;
+    type R: GuestMemoryRegion;
+
+    /// The type of the item associated with the iterator returned by the `iter` method.
+    type Item: Deref<Target = Self::R>;
 
     /// Type of the iter() method's return value.
-    type I: Iterator<Item = &'a Self::R>;
+    type I: Iterator<Item = Self::Item>;
 
     /// Returns the number of regions in the collection.
     fn num_regions(&self) -> usize;
@@ -180,7 +183,7 @@ pub trait GuestMemory<'a> {
     fn find_region(&self, addr: GuestAddress) -> Option<&Self::R>;
 
     /// Gets an iterator over the entries in the collection.
-    fn iter(&'a self) -> Self::I;
+    fn iter<'a>(&'a self) -> Self::I;
 
     /// Applies two functions, specified as callbacks, on the inner memory regions.
     ///
@@ -297,7 +300,7 @@ pub trait GuestMemory<'a> {
     }
 }
 
-impl<'a, T: GuestMemory<'a>> Bytes<GuestAddress> for T {
+impl<T: GuestMemory> Bytes<GuestAddress> for T {
     type E = Error;
 
     fn write(&self, buf: &[u8], addr: GuestAddress) -> Result<usize> {
