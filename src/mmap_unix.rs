@@ -20,14 +20,57 @@
 //! - [GuestMemoryMmap](struct.GuestMemoryMmap.html): provides methods to access a collection of
 //! GuestRegionMmap objects.
 
-use libc;
+use std::fs::File;
 use std::io;
 use std::ptr::null_mut;
 
+use libc;
+
+use guest_memory::FileMappingConfig;
 use mmap::AsSlice;
 use volatile_memory::{self, compute_offset, VolatileMemory, VolatileSlice};
 
 use std::os::unix::io::AsRawFd;
+
+// TODO: when mapping an file, should we also check that offset + length is smaller than the file
+// size? AFAIK, accesses past the end of the object can generate SIGBUS signals, but then again,
+// even if we do verify, someone might truncate the file later. I guess it might still be a
+// valuable sanity check.
+// TODO: should we explicitly check that the offset is a multiple of PAGE_SIZE, or will mmap return
+// an error anyway in this case?
+fn mmap(file_mapping_config: Option<&FileMappingConfig>, length: usize) -> io::Result<*mut u8> {
+    let (fd, flags, offset) = if let Some(config) = file_mapping_config {
+        (
+            config.file().as_raw_fd(),
+            libc::MAP_NORESERVE | libc::MAP_SHARED,
+            config.offset(),
+        )
+    } else {
+        (
+            -1,
+            libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_NORESERVE,
+            0,
+        )
+    };
+
+    // Safe because all parameters are valid (or lead to immediate mmap errors).
+    let addr = unsafe {
+        libc::mmap(
+            null_mut(),
+            length,
+            libc::PROT_READ | libc::PROT_WRITE,
+            flags,
+            fd,
+            offset as libc::off_t,
+        )
+    };
+
+    if addr == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+
+    Ok(addr as *mut u8)
+}
 
 /// A backend driver to access guest's physical memory by mmapping guest's memory into the current
 /// process.
@@ -38,6 +81,7 @@ use std::os::unix::io::AsRawFd;
 pub struct MmapRegion {
     addr: *mut u8,
     size: usize,
+    file_mapping_config: Option<FileMappingConfig>,
 }
 
 // Send and Sync aren't automatically inherited for the raw address pointer.
@@ -53,24 +97,10 @@ impl MmapRegion {
     /// # Arguments
     /// * `size` - Size of memory region in bytes.
     pub fn new(size: usize) -> io::Result<Self> {
-        // This is safe because we are creating an anonymous mapping in a place not already used by
-        // any other area in this process.
-        let addr = unsafe {
-            libc::mmap(
-                null_mut(),
-                size,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_ANONYMOUS | libc::MAP_SHARED | libc::MAP_NORESERVE,
-                -1,
-                0,
-            )
-        };
-        if addr == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
-        }
         Ok(Self {
-            addr: addr as *mut u8,
+            addr: mmap(None, size)?,
             size,
+            file_mapping_config: None,
         })
     }
 
@@ -80,25 +110,13 @@ impl MmapRegion {
     /// * `fd` - File descriptor to mmap from.
     /// * `size` - Size of memory region in bytes.
     /// * `offset` - Offset in bytes from the beginning of `fd` to start the mmap.
-    pub fn from_fd(fd: &AsRawFd, size: usize, offset: libc::off_t) -> io::Result<Self> {
-        // This is safe because we are creating a mapping in a place not already used by any other
-        // area in this process.
-        let addr = unsafe {
-            libc::mmap(
-                null_mut(),
-                size,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_SHARED,
-                fd.as_raw_fd(),
-                offset,
-            )
-        };
-        if addr == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
-        }
+    pub fn from_file(file: File, size: usize, offset: usize) -> io::Result<Self> {
+        let file_mapping_config = Some(FileMappingConfig::new(file, offset));
+        let addr = mmap(file_mapping_config.as_ref(), size)?;
         Ok(Self {
-            addr: addr as *mut u8,
+            addr,
             size,
+            file_mapping_config,
         })
     }
 
@@ -106,6 +124,12 @@ impl MmapRegion {
     /// used for passing this region to ioctls for setting guest memory.
     pub fn as_ptr(&self) -> *mut u8 {
         self.addr
+    }
+
+    /// Returns the configuration of the file mapping which backs this region, or `None` if
+    /// we're only using anonymous memory.
+    pub fn file_mapping_config(&self) -> Option<&FileMappingConfig> {
+        self.file_mapping_config.as_ref()
     }
 }
 
@@ -155,14 +179,4 @@ impl Drop for MmapRegion {
 }
 
 #[cfg(test)]
-mod tests {
-    use mmap_unix::MmapRegion;
-    use std::os::unix::io::FromRawFd;
-
-    #[test]
-    fn map_invalid_fd() {
-        let fd = unsafe { std::fs::File::from_raw_fd(-1) };
-        let e = MmapRegion::from_fd(&fd, 1024, 0).unwrap_err();
-        assert_eq!(e.raw_os_error(), Some(libc::EBADF));
-    }
-}
+mod tests {}

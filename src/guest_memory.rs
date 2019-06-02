@@ -29,9 +29,9 @@
 
 use std::convert::From;
 use std::fmt::{self, Display};
+use std::fs::File;
 use std::io::{self, Read, Write};
 use std::ops::{BitAnd, BitOr};
-use std::os::unix::io::RawFd;
 
 use address::{Address, AddressValue};
 use bytes::Bytes;
@@ -114,6 +114,30 @@ impl_address_ops!(MemoryRegionAddress, u64);
 /// Type of the raw value stored in a GuestAddress object.
 pub type GuestUsize = <GuestAddress as AddressValue>::V;
 
+/// Describes a file mapping backing a `GuestMemoryRegion`.
+#[derive(Debug)]
+pub struct FileMappingConfig {
+    file: File,
+    offset: usize,
+}
+
+impl FileMappingConfig {
+    /// Create a new mapping configuration based on the provided file and offset.
+    pub fn new(file: File, offset: usize) -> Self {
+        FileMappingConfig { file, offset }
+    }
+
+    /// Returns the file backing the mapping.
+    pub fn file(&self) -> &File {
+        &self.file
+    }
+
+    /// Returns the offset where the mapping starts into the file.
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+}
+
 /// Represents a continuous region of guest physical memory.
 #[allow(clippy::len_without_is_empty)]
 pub trait GuestMemoryRegion: Bytes<MemoryRegionAddress, E = Error> {
@@ -163,14 +187,8 @@ pub trait GuestMemoryRegion: Bytes<MemoryRegionAddress, E = Error> {
             .and_then(|offset| self.check_address(MemoryRegionAddress(offset)))
     }
 
-    /// Return the file descriptor pointing to the memory region. Return None
-    /// if no file descriptor is associated with the region.
-    fn fd(&self) -> Option<RawFd>;
-
-    /// Return the file descriptor offset related to the memory region. Return
-    /// None if there is no file descriptor associated with the region, hence
-    /// there is no associated offset.
-    fn fd_offset(&self) -> Option<usize>;
+    /// Returns the mapping configuration for file backed guest memory regions.
+    fn file_mapping_config(&self) -> Option<&FileMappingConfig>;
 
     /// Return a slice corresponding to the data in the region; unsafe because of
     /// possible aliasing.  Return None if the region does not support slice-based
