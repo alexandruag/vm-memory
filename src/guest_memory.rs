@@ -27,6 +27,7 @@
 //!     - map a request address to a GuestMemoryRegion object and relay the request to it.
 //!     - handle cases where an access request spanning two or more GuestMemoryRegion objects.
 
+use std::cell::Cell;
 use std::convert::From;
 use std::fmt::{self, Display};
 use std::fs::File;
@@ -236,6 +237,108 @@ pub trait GuestMemoryRegion: Bytes<MemoryRegionAddress, E = Error> {
     }
 }
 
+/// `GuestMemoryRange` represents a contiguous region of memory, all
+/// backed by the same `GuestRegion` (possibly by a subset of it).
+pub struct GuestMemoryRange<'a, R> {
+    /// The memory region backing this range.
+    region: &'a R,
+
+    /// The starting address within the region for this range.
+    start: MemoryRegionAddress,
+
+    /// The number of bytes for this range.
+    len: usize,
+}
+
+/// `GuestMemoryRangeIter` splits a memory range in contiguous regions
+/// (each represented by a `GuestMemoryRange`).  The caller can then
+/// process an entire range, or a part thereof, and proceed to the
+/// next one.
+pub struct GuestMemoryRangeIter<'a, M: GuestMemory + ?Sized> {
+    /// The GuestMemory on which we are iterating.
+    memory: &'a M,
+
+    /// The address inside `self.memory` which will be converted into
+    /// a GuestMemoryRange by `current_range()`.
+    addr: GuestAddress,
+
+    /// The total number of bytes that will be processed by the iterator
+    /// before returning None.
+    count: usize,
+
+    /// The number of bytes that have been processed so far by the iterator.
+    processed: usize,
+
+    // The length of the current GuestMemoryRange, used to check for client
+    // bugs only.
+    _last_length: Cell<usize>,
+}
+
+impl<'a, M: GuestMemory + ?Sized> GuestMemoryRangeIter<'a, M> {
+    /// Return a new iterator for the range between `addr` (inclusive)
+    /// and `addr + count` (exclusive) within the given `GuestMemory`.
+    pub fn new(memory: &'a M, addr: GuestAddress, count: usize) -> GuestMemoryRangeIter<'a, M> {
+        GuestMemoryRangeIter {
+            memory,
+            addr,
+            count,
+            processed: 0,
+            _last_length: Cell::new(0),
+        }
+    }
+
+    fn current_region(&self) -> Result<Option<&'a M::R>> {
+        if self.processed == self.count {
+            return Ok(None);
+        }
+        match self.memory.find_region(self.addr) {
+            // A partial read is okay, but if self.processed is zero the initial
+            // address was invalid
+            None if self.processed == 0 => Err(Error::InvalidGuestAddress(self.addr)),
+            opt => Ok(opt),
+        }
+    }
+
+    /// Return the range within `self.memory` corresponding to the guest
+    /// address `self.addr`, or `Ok(None)` if `self.count` bytes have already
+    /// been processed since the creation of the iterator.
+    ///
+    /// In case there is no region at a given address and this is the first
+    /// call to `current_range()` (that is, the iterator has never been advanced),
+    /// return an error.  If the iterator has been advance, however, the
+    /// iteration will just be interrupted early and `current_range()` will
+    /// return `Ok(None)`.
+    pub fn current_range(&self) -> Result<Option<GuestMemoryRange<M::R>>> {
+        let range = self.current_region()?.map(|region| {
+            let start = region.to_region_addr(self.addr).unwrap();
+            let cap = region.len() - start.raw_value();
+
+            // The region must not wrap around the address space, that would be invalid
+            // (see for example GuestRegionMmap::new).
+            assert!(self.addr.0.checked_add(cap).is_some());
+
+            let len = std::cmp::min(cap, (self.count - self.processed) as GuestUsize) as usize;
+            self._last_length.set(len);
+            GuestMemoryRange { region, start, len }
+        });
+        Ok(range)
+    }
+
+    /// Advance the iterator by `count` bytes.  `count` must be less or equal to the
+    /// length of the last `GuestMemoryRange` returned by `current_range()`.
+    pub fn advance(&mut self, count: usize) {
+        assert!(count > 0 && count <= self._last_length.get());
+        self.processed += count;
+        self.addr = match self.addr.overflowing_add(count as GuestUsize) {
+            (GuestAddress(0), _) => GuestAddress(0),
+            (result, false) => result,
+            // An overflow here would imply that a region is wrapping around from the
+            // end of the address space to the beginning, which we checked for earlier.
+            (_, true) => panic!("guest address overflow"),
+        }
+    }
+}
+
 /// Represents a container for a collection of GuestMemoryRegion objects.
 ///
 /// The main responsibilities of the GuestMemory trait are:
@@ -348,36 +451,15 @@ pub trait GuestMemory {
     where
         F: FnMut(usize, usize, MemoryRegionAddress, &Self::R) -> Result<usize>,
     {
-        let mut cur = addr;
-        let mut total = 0;
-        while let Some(region) = self.find_region(cur) {
-            let start = region.to_region_addr(cur).unwrap();
-            let cap = region.len() - start.raw_value();
-            let len = std::cmp::min(cap, (count - total) as GuestUsize);
-            match f(total, len as usize, start, region) {
-                // no more data
-                Ok(0) => break,
-                // made some progress
-                Ok(len) => {
-                    total += len;
-                    if total == count {
-                        break;
-                    }
-                    cur = match cur.overflowing_add(len as GuestUsize) {
-                        (GuestAddress(0), _) => GuestAddress(0),
-                        (result, false) => result,
-                        (_, true) => panic!("guest address overflow"),
-                    }
-                }
-                // error happened
-                e => return e,
+        let mut iter = GuestMemoryRangeIter::new(self, addr, count);
+        while let Some(range) = iter.current_range()? {
+            let len = f(iter.processed, range.len, range.start, range.region)?;
+            if len == 0 {
+                break;
             }
+            iter.advance(len)
         }
-        if total == 0 {
-            Err(Error::InvalidGuestAddress(addr))
-        } else {
-            Ok(total)
-        }
+        Ok(iter.processed)
     }
 
     /// Get the host virtual address corresponding to the guest address.
