@@ -439,29 +439,6 @@ pub trait GuestMemory {
             .and_then(|addr| self.check_address(addr))
     }
 
-    /// Invoke callback `f` to handle data in the address range [addr, addr + count).
-    ///
-    /// The address range [addr, addr + count) may span more than one GuestMemoryRegion objects, or
-    /// even has holes within it. So try_access() invokes the callback 'f' for each GuestMemoryRegion
-    /// object involved and returns:
-    /// - error code returned by the callback 'f'
-    /// - size of data already handled when encountering the first hole
-    /// - size of data already handled when the whole range has been handled
-    fn try_access<F>(&self, count: usize, addr: GuestAddress, mut f: F) -> Result<usize>
-    where
-        F: FnMut(usize, usize, MemoryRegionAddress, &Self::R) -> Result<usize>,
-    {
-        let mut iter = GuestMemoryRangeIter::new(self, addr, count);
-        while let Some(range) = iter.current_range()? {
-            let len = f(iter.processed, range.len, range.start, range.region)?;
-            if len == 0 {
-                break;
-            }
-            iter.advance(len)
-        }
-        Ok(iter.processed)
-    }
-
     /// Get the host virtual address corresponding to the guest address.
     ///
     /// Some GuestMemory backends, like the GuestMemoryMmap backend, have the capability to mmap
@@ -482,23 +459,31 @@ impl<T: GuestMemory> Bytes<GuestAddress> for T {
     type E = Error;
 
     fn write(&self, buf: &[u8], addr: GuestAddress) -> Result<usize> {
-        self.try_access(
-            buf.len(),
-            addr,
-            |offset, _count, caddr, region| -> Result<usize> {
-                region.write(&buf[offset as usize..], caddr)
-            },
-        )
+        let mut iter = GuestMemoryRangeIter::new(self, addr, buf.len());
+        while let Some(range) = iter.current_range()? {
+            let bytes_written = range
+                .region
+                .write(&buf[iter.processed as usize..], range.start)?;
+            if bytes_written == 0 {
+                break;
+            }
+            iter.advance(bytes_written)
+        }
+        Ok(iter.processed)
     }
 
     fn read(&self, buf: &mut [u8], addr: GuestAddress) -> Result<usize> {
-        self.try_access(
-            buf.len(),
-            addr,
-            |offset, _count, caddr, region| -> Result<usize> {
-                region.read(&mut buf[offset as usize..], caddr)
-            },
-        )
+        let mut iter = GuestMemoryRangeIter::new(self, addr, buf.len());
+        while let Some(range) = iter.current_range()? {
+            let bytes_read = range
+                .region
+                .read(&mut buf[iter.processed as usize..], range.start)?;
+            if bytes_read == 0 {
+                break;
+            }
+            iter.advance(bytes_read)
+        }
+        Ok(iter.processed)
     }
 
     /// # Examples
@@ -594,24 +579,27 @@ impl<T: GuestMemory> Bytes<GuestAddress> for T {
     where
         F: Read,
     {
-        self.try_access(count, addr, |offset, len, caddr, region| -> Result<usize> {
-            // Check if something bad happened before doing unsafe things.
-            assert!(offset < count);
-            if let Some(dst) = unsafe { region.as_mut_slice() } {
-                // This is safe cause `start` and `len` are within the `region`.
-                let start = caddr.raw_value() as usize;
-                let end = start + len;
-                let bytes_read = src.read(&mut dst[start..end]).map_err(Error::IOError)?;
-                Ok(bytes_read)
+        let mut iter = GuestMemoryRangeIter::new(self, addr, count);
+        while let Some(range) = iter.current_range()? {
+            let bytes_read = if let Some(dst) = unsafe { range.region.as_mut_slice() } {
+                // This is safe cause `range.start` and `range.len` are within the `region`.
+                let start = range.start.raw_value() as usize;
+                let end = start + range.len;
+                src.read(&mut dst[start..end]).map_err(Error::IOError)?
             } else {
-                let len = std::cmp::min(len, MAX_ACCESS_CHUNK);
+                let len = std::cmp::min(range.len, MAX_ACCESS_CHUNK);
                 let mut buf = vec![0u8; len].into_boxed_slice();
                 let bytes_read = src.read(&mut buf[..]).map_err(Error::IOError)?;
-                let bytes_written = region.write(&buf[0..bytes_read], caddr)?;
+                if bytes_read == 0 {
+                    break;
+                }
+                let bytes_written = range.region.write(&buf[0..bytes_read], range.start)?;
                 assert_eq!(bytes_written, bytes_read);
-                Ok(bytes_read)
-            }
-        })
+                bytes_read
+            };
+            iter.advance(bytes_read)
+        }
+        Ok(iter.processed)
     }
 
     fn read_exact_from<F>(&self, addr: GuestAddress, src: &mut F, count: usize) -> Result<()>
@@ -659,30 +647,30 @@ impl<T: GuestMemory> Bytes<GuestAddress> for T {
     where
         F: Write,
     {
-        self.try_access(count, addr, |offset, len, caddr, region| -> Result<usize> {
-            // Check if something bad happened before doing unsafe things.
-            assert!(offset < count);
-            if let Some(src) = unsafe { region.as_slice() } {
-                // This is safe cause `start` and `len` are within the `region`.
-                let start = caddr.raw_value() as usize;
-                let end = start + len;
+        let mut iter = GuestMemoryRangeIter::new(self, addr, count);
+        while let Some(range) = iter.current_range()? {
+            let bytes_written = if let Some(src) = unsafe { range.region.as_mut_slice() } {
+                // This is safe cause `range.start` and `range.len` are within the `region`.
+                let start = range.start.raw_value() as usize;
+                let end = start + range.len;
                 // It is safe to read from volatile memory. Accessing the guest
                 // memory as a slice should be OK as long as nothing assumes another
                 // thread won't change what is loaded; however, we may want to introduce
                 // VolatileRead and VolatileWrite traits in the future.
-                let bytes_written = dst.write(&src[start..end]).map_err(Error::IOError)?;
-                Ok(bytes_written)
+                dst.write(&src[start..end]).map_err(Error::IOError)?
             } else {
-                let len = std::cmp::min(len, MAX_ACCESS_CHUNK);
+                let len = std::cmp::min(range.len, MAX_ACCESS_CHUNK);
                 let mut buf = vec![0u8; len].into_boxed_slice();
-                let bytes_read = region.read(&mut buf, caddr)?;
+                let bytes_read = range.region.read(&mut buf, range.start)?;
                 assert_eq!(bytes_read, len);
                 // For a non-RAM region, reading could have side effects, so we
                 // must use write_all().
                 dst.write_all(&buf).map_err(Error::IOError)?;
-                Ok(len)
-            }
-        })
+                len
+            };
+            iter.advance(bytes_written)
+        }
+        Ok(iter.processed)
     }
 
     fn write_all_to<F>(&self, addr: GuestAddress, dst: &mut F, count: usize) -> Result<()>
