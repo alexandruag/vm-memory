@@ -34,6 +34,8 @@ pub use guest_memory::{
     GuestMemoryRegion, GuestUsize, MemoryRegionAddress, Result as GuestMemoryResult,
 };
 
+mod helpers;
+
 #[cfg(all(feature = "backend-mmap", unix))]
 mod mmap_unix;
 

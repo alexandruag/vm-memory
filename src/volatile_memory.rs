@@ -36,6 +36,7 @@ use std::result;
 use std::slice::{from_raw_parts, from_raw_parts_mut};
 use std::usize;
 
+use crate::helpers::{ReadUninterrupted, WriteUninterrupted};
 use crate::{ByteValued, Bytes};
 
 /// `VolatileMemory` related errors.
@@ -592,13 +593,7 @@ impl Bytes<usize> for VolatileSlice<'_> {
             // memory as a mutable slice is OK because nothing assumes another
             // thread won't change what is loaded.
             let dst = &mut self.as_mut_slice()[addr..end];
-            loop {
-                match src.read(dst) {
-                    Ok(n) => break Ok(n),
-                    Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(e) => break Err(Error::IOError(e)),
-                }
-            }
+            src.read_uninterrupted(dst).map_err(Error::IOError)
         }
     }
 
@@ -662,13 +657,7 @@ impl Bytes<usize> for VolatileSlice<'_> {
             // memory as a slice is OK because nothing assumes another thread
             // won't change what is loaded.
             let src = &self.as_mut_slice()[addr..end];
-            loop {
-                match dst.write(src) {
-                    Ok(n) => break Ok(n),
-                    Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(e) => break Err(Error::IOError(e)),
-                }
-            }
+            dst.write_uninterrupted(src).map_err(Error::IOError)
         }
     }
 

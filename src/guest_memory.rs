@@ -41,6 +41,7 @@ use std::sync::Arc;
 
 use crate::address::{Address, AddressValue};
 use crate::bytes::Bytes;
+use crate::helpers::{ReadUninterrupted, WriteUninterrupted};
 use crate::volatile_memory;
 
 static MAX_ACCESS_CHUNK: usize = 4096;
@@ -743,27 +744,17 @@ impl<T: GuestMemory> Bytes<GuestAddress> for T {
                 // This is safe cause `start` and `len` are within the `region`.
                 let start = caddr.raw_value() as usize;
                 let end = start + len;
-                loop {
-                    match src.read(&mut dst[start..end]) {
-                        Ok(n) => break Ok(n),
-                        Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(e) => break Err(Error::IOError(e)),
-                    }
-                }
+                src.read_uninterrupted(&mut dst[start..end])
+                    .map_err(Error::IOError)
             } else {
                 let len = std::cmp::min(len, MAX_ACCESS_CHUNK);
                 let mut buf = vec![0u8; len].into_boxed_slice();
-                loop {
-                    match src.read(&mut buf[..]) {
-                        Ok(bytes_read) => {
-                            let bytes_written = region.write(&buf[0..bytes_read], caddr)?;
-                            assert_eq!(bytes_written, bytes_read);
-                            break Ok(bytes_read);
-                        }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(e) => break Err(Error::IOError(e)),
-                    }
-                }
+                let bytes_read = src
+                    .read_uninterrupted(buf.as_mut())
+                    .map_err(Error::IOError)?;
+                let bytes_written = region.write(&buf[0..bytes_read], caddr)?;
+                assert_eq!(bytes_written, bytes_read);
+                Ok(bytes_read)
             }
         })
     }
@@ -821,17 +812,12 @@ impl<T: GuestMemory> Bytes<GuestAddress> for T {
                 // This is safe cause `start` and `len` are within the `region`.
                 let start = caddr.raw_value() as usize;
                 let end = start + len;
-                loop {
-                    // It is safe to read from volatile memory. Accessing the guest
-                    // memory as a slice should be OK as long as nothing assumes another
-                    // thread won't change what is loaded; however, we may want to introduce
-                    // VolatileRead and VolatileWrite traits in the future.
-                    match dst.write(&src[start..end]) {
-                        Ok(n) => break Ok(n),
-                        Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(e) => break Err(Error::IOError(e)),
-                    }
-                }
+                // It is safe to read from volatile memory. Accessing the guest
+                // memory as a slice should be OK as long as nothing assumes another
+                // thread won't change what is loaded; however, we may want to introduce
+                // VolatileRead and VolatileWrite traits in the future.
+                dst.write_uninterrupted(&src[start..end])
+                    .map_err(Error::IOError)
             } else {
                 let len = std::cmp::min(len, MAX_ACCESS_CHUNK);
                 let mut buf = vec![0u8; len].into_boxed_slice();
