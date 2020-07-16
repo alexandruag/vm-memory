@@ -20,4 +20,8 @@ impl MemRange {
     pub fn expand(&mut self, len: usize) {
         self.len += len;
     }
+
+    pub fn start(&self) -> u64 {
+        self.start
+    }
 }

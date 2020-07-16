@@ -21,6 +21,7 @@ use std::result;
 use std::sync::Arc;
 
 use crate::address::Address;
+use crate::bytes::ByteValued;
 use crate::guest_memory::{
     self, FileOffset, GuestAddress, GuestMemory, GuestMemoryRegion, GuestUsize,
     MemoryRegionAddress, Result,
@@ -28,6 +29,7 @@ use crate::guest_memory::{
 use crate::range::MemRange;
 use crate::volatile_memory::{VolatileMemory, VolatileSlice};
 use crate::Bytes;
+
 
 #[cfg(unix)]
 pub use crate::mmap_unix::{Error as MmapRegionError, MmapRegion};
@@ -404,7 +406,7 @@ impl GuestMemoryMmap {
         let addr = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
-                10 << 30,
+                128 << 30,
                 libc::PROT_NONE,
                 libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
                 -1,
@@ -413,6 +415,35 @@ impl GuestMemoryMmap {
         };
         assert_ne!(addr, libc::MAP_FAILED);
         addr as usize
+    }
+
+    fn find_range(&self, addr: GuestAddress) -> Option<&MemRange> {
+        let index = match self.ranges.binary_search_by_key(&addr.0, |x| x.start()) {
+            Ok(x) => Some(x),
+            // Within the closest region with starting address < addr
+            Err(x) if (x > 0 && addr.0 < self.ranges[x - 1].next()) => Some(x - 1),
+            _ => None,
+        };
+        index.map(|x| &self.ranges[x])
+    }
+
+    fn check_full_range(&self, addr: GuestAddress, len: usize) -> Option<*mut u8> {
+        let range = self.find_range(addr)?;
+        if range.next() >= addr.checked_add(len as u64)?.raw_value() {
+            return Some((self.host_base_addr + addr.raw_value() as usize) as *mut u8);
+        }
+        None
+    }
+
+    fn check_partial_range(&self, addr: GuestAddress, len: usize) -> Option<(*mut u8, usize)> {
+        let range = self.find_range(addr)?;
+        let offset = addr.checked_add(len as u64)?.raw_value();
+        let min = std::cmp::min(range.next(), offset);
+        let min_len = min - addr.raw_value();
+        Some((
+            ((self.host_base_addr + addr.raw_value() as usize) as *mut u8),
+            min_len as usize,
+        ))
     }
 
     /// Creates an empty `GuestMemoryMmap` instance.
@@ -649,14 +680,35 @@ impl Bytes<GuestAddress> for GuestMemoryMmap {
     /// # test_write_u64()
     /// ```
     fn read_slice(&self, buf: &mut [u8], addr: GuestAddress) -> Result<()> {
-        let res = self.read(buf, addr)?;
-        if res != buf.len() {
+        /*
+        let (ptr, len) = self
+            .check_partial_range(addr, buf.len())
+            .ok_or(Self::E::InvalidGuestAddress(addr))?;
+
+        unsafe { std::ptr::copy_nonoverlapping(ptr as *const u8, buf.as_mut_ptr(), len) };
+        if len != buf.len() {
             return Err(Self::E::PartialBuffer {
                 expected: buf.len(),
-                completed: res,
+                completed: len,
             });
         }
+        */
+
+        let ptr = self
+            .check_full_range(addr, buf.len())
+            .ok_or(Self::E::InvalidGuestAddress(addr))?;
+
+        unsafe { std::ptr::copy_nonoverlapping(ptr as *const u8, buf.as_mut_ptr(), buf.len()) };
+
         Ok(())
+    }
+
+    fn read_obj<T: ByteValued>(&self, addr: GuestAddress) -> Result<T> {
+        let ptr = self
+            .check_full_range(addr, std::mem::size_of::<T>())
+            .ok_or(Self::E::InvalidGuestAddress(addr))?;
+
+        Ok(unsafe { std::ptr::read_unaligned(ptr as *const T) })
     }
 
     /// # Examples
