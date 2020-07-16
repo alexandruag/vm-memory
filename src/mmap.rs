@@ -25,6 +25,7 @@ use crate::guest_memory::{
     self, FileOffset, GuestAddress, GuestMemory, GuestMemoryRegion, GuestUsize,
     MemoryRegionAddress, Result,
 };
+use crate::range::MemRange;
 use crate::volatile_memory::{VolatileMemory, VolatileSlice};
 use crate::Bytes;
 
@@ -390,15 +391,37 @@ impl GuestMemoryRegion for GuestRegionMmap {
 /// Represents the entire physical memory of the guest by tracking all its memory regions.
 /// Each region is an instance of `GuestRegionMmap`, being backed by a mapping in the
 /// virtual address space of the calling process.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct GuestMemoryMmap {
     regions: Vec<Arc<GuestRegionMmap>>,
+    // Raw ptrs are not Send nor Sync.
+    host_base_addr: usize,
+    ranges: Vec<MemRange>,
 }
 
 impl GuestMemoryMmap {
+    fn reserve_host_range() -> usize {
+        let addr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                10 << 30,
+                libc::PROT_NONE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(addr, libc::MAP_FAILED);
+        addr as usize
+    }
+
     /// Creates an empty `GuestMemoryMmap` instance.
     pub fn new() -> Self {
-        Self::default()
+        GuestMemoryMmap {
+            regions: Vec::new(),
+            host_base_addr: Self::reserve_host_range(),
+            ranges: Vec::new(),
+        }
     }
 
     /// Creates a container and allocates anonymous memory for guest memory regions.
@@ -417,22 +440,25 @@ impl GuestMemoryMmap {
         A: Borrow<(GuestAddress, usize, Option<FileOffset>)>,
         T: IntoIterator<Item = A>,
     {
+        let host_base_addr = Self::reserve_host_range();
         Self::from_regions(
             ranges
                 .into_iter()
                 .map(|x| {
                     let guest_base = x.borrow().0;
                     let size = x.borrow().1;
+                    let fixed_addr = host_base_addr + guest_base.0 as usize;
 
                     if let Some(ref f_off) = x.borrow().2 {
-                        MmapRegion::from_file(f_off.clone(), size)
+                        MmapRegion::from_file(f_off.clone(), size, fixed_addr)
                     } else {
-                        MmapRegion::new(size)
+                        MmapRegion::new(size, fixed_addr)
                     }
                     .map_err(Error::MmapRegion)
                     .and_then(|r| GuestRegionMmap::new(r, guest_base))
                 })
                 .collect::<result::Result<Vec<_>, Error>>()?,
+            host_base_addr,
         )
     }
 
@@ -443,8 +469,11 @@ impl GuestMemoryMmap {
     /// * `regions` - The vector of regions.
     ///               The regions shouldn't overlap and they should be sorted
     ///               by the starting address.
-    pub fn from_regions(mut regions: Vec<GuestRegionMmap>) -> result::Result<Self, Error> {
-        Self::from_arc_regions(regions.drain(..).map(Arc::new).collect())
+    pub fn from_regions(
+        mut regions: Vec<GuestRegionMmap>,
+        host_base_addr: usize,
+    ) -> result::Result<Self, Error> {
+        Self::from_arc_regions(regions.drain(..).map(Arc::new).collect(), host_base_addr)
     }
 
     /// Creates a new `GuestMemoryMmap` from a vector of Arc regions.
@@ -459,7 +488,10 @@ impl GuestMemoryMmap {
     /// * `regions` - The vector of Arc regions.
     ///               The regions shouldn't overlap and they should be sorted
     ///               by the starting address.
-    pub fn from_arc_regions(regions: Vec<Arc<GuestRegionMmap>>) -> result::Result<Self, Error> {
+    pub fn from_arc_regions(
+        regions: Vec<Arc<GuestRegionMmap>>,
+        host_base_addr: usize,
+    ) -> result::Result<Self, Error> {
         if regions.is_empty() {
             return Err(Error::NoMemoryRegion);
         }
@@ -477,7 +509,23 @@ impl GuestMemoryMmap {
             }
         }
 
-        Ok(Self { regions })
+        let mut ranges = vec![MemRange::new(regions[0].guest_base.0)];
+        for region in regions.iter() {
+            let start = region.guest_base.0;
+            let len = region.size();
+            let last = ranges.last_mut().unwrap();
+            if last.next() == start {
+                last.expand(len)
+            } else {
+                ranges.push(MemRange::with_len(start, len))
+            }
+        }
+
+        Ok(Self {
+            regions,
+            host_base_addr,
+            ranges,
+        })
     }
 
     /// Insert a region into the `GuestMemoryMmap` object and return a new `GuestMemoryMmap`.
@@ -492,7 +540,7 @@ impl GuestMemoryMmap {
         regions.push(region);
         regions.sort_by_key(|x| x.start_addr());
 
-        Self::from_arc_regions(regions)
+        Self::from_arc_regions(regions, self.host_base_addr)
     }
 
     /// Remove a region into the `GuestMemoryMmap` object and return a new `GuestMemoryMmap`
@@ -510,7 +558,14 @@ impl GuestMemoryMmap {
             if self.regions.get(region_index).unwrap().size() as GuestUsize == size {
                 let mut regions = self.regions.clone();
                 let region = regions.remove(region_index);
-                return Ok((Self { regions }, region));
+                return Ok((
+                    Self {
+                        regions,
+                        host_base_addr: self.host_base_addr,
+                        ranges: unimplemented!(),
+                    },
+                    region,
+                ));
             }
         }
 

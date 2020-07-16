@@ -37,6 +37,8 @@ pub use guest_memory::{
 #[cfg(all(feature = "backend-mmap", unix))]
 mod mmap_unix;
 
+mod range;
+
 #[cfg(all(feature = "backend-mmap", windows))]
 mod mmap_windows;
 

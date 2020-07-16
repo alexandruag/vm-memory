@@ -14,7 +14,6 @@ use std::error;
 use std::fmt;
 use std::io;
 use std::os::unix::io::AsRawFd;
-use std::ptr::null_mut;
 use std::result;
 
 use libc;
@@ -93,12 +92,13 @@ impl MmapRegion {
     ///
     /// # Arguments
     /// * `size` - The size of the memory region in bytes.
-    pub fn new(size: usize) -> Result<Self> {
+    pub fn new(size: usize, fixed_addr: usize) -> Result<Self> {
         Self::build(
             None,
             size,
             libc::PROT_READ | libc::PROT_WRITE,
             libc::MAP_ANONYMOUS | libc::MAP_NORESERVE | libc::MAP_PRIVATE,
+            fixed_addr,
         )
     }
 
@@ -108,12 +108,13 @@ impl MmapRegion {
     /// * `file_offset` - The mapping will be created at offset `file_offset.start` in the file
     ///                   referred to by `file_offset.file`.
     /// * `size` - The size of the memory region in bytes.
-    pub fn from_file(file_offset: FileOffset, size: usize) -> Result<Self> {
+    pub fn from_file(file_offset: FileOffset, size: usize, fixed_addr: usize) -> Result<Self> {
         Self::build(
             Some(file_offset),
             size,
             libc::PROT_READ | libc::PROT_WRITE,
             libc::MAP_NORESERVE | libc::MAP_SHARED,
+            fixed_addr,
         )
     }
 
@@ -132,12 +133,14 @@ impl MmapRegion {
         size: usize,
         prot: i32,
         flags: i32,
+        fixed_addr: usize,
     ) -> Result<Self> {
-        // Forbid MAP_FIXED, as it doesn't make sense in this context, and is pretty dangerous
-        // in general.
+        // Forbid MAP_FIXED, because we're using it ourselves now anyway.
         if flags & libc::MAP_FIXED != 0 {
             return Err(Error::MapFixed);
         }
+
+        let flags = flags | libc::MAP_FIXED;
 
         let (fd, offset) = if let Some(ref f_off) = file_offset {
             check_file_offset(f_off, size)?;
@@ -148,7 +151,16 @@ impl MmapRegion {
 
         // This is safe because we're not allowing MAP_FIXED, and invalid parameters cannot break
         // Rust safety guarantees (things may change if we're mapping /dev/mem or some wacky file).
-        let addr = unsafe { libc::mmap(null_mut(), size, prot, flags, fd, offset as libc::off_t) };
+        let addr = unsafe {
+            libc::mmap(
+                fixed_addr as *mut libc::c_void,
+                size,
+                prot,
+                flags,
+                fd,
+                offset as libc::off_t,
+            )
+        };
 
         if addr == libc::MAP_FAILED {
             return Err(Error::Mmap(io::Error::last_os_error()));
