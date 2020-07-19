@@ -18,9 +18,13 @@
 //! - [Address](trait.Address.html): encapsulates an [`AddressValue`](trait.AddressValue.html)
 //! object and defines methods to access and manipulate it.
 
+mod align;
+
 use std::cmp::{Eq, Ord, PartialEq, PartialOrd};
 use std::fmt::Debug;
 use std::ops::{Add, BitAnd, BitOr, Not, Sub};
+
+pub use align::{Aligned, AlignmentError};
 
 /// Simple helper trait used to store a raw address value.
 pub trait AddressValue {

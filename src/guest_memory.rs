@@ -37,10 +37,11 @@ use std::fs::File;
 use std::io;
 use std::ops::{BitAnd, BitOr, Deref};
 use std::rc::Rc;
+use std::result;
 use std::sync::Arc;
 
-use crate::address::{Address, AddressValue};
-use crate::bytes::Bytes;
+use crate::address::{Address, AddressValue, Aligned, AlignmentError};
+use crate::bytes::{AtomicAccess, ByteValued, Bytes};
 use crate::volatile_memory;
 
 /// Errors associated with handling guest memory accesses.
@@ -49,6 +50,8 @@ use crate::volatile_memory;
 pub enum Error {
     /// Failure in finding a guest address in any memory regions mapped by this guest.
     InvalidGuestAddress(GuestAddress),
+    /// Invalid `MemoryRegionAddress` in the memory region starting at the specified `GuestAddress`.
+    InvalidMemoryRegionAddress(GuestAddress, MemoryRegionAddress),
     /// Couldn't read/write from the given source.
     IOError(io::Error),
     /// Incomplete read or write.
@@ -57,6 +60,8 @@ pub enum Error {
     InvalidBackendAddress,
     /// Host virtual address not available.
     HostAddressNotAvailable,
+    /// Overflow occurred while computing an address.
+    Overflow,
 }
 
 impl From<volatile_memory::Error> for Error {
@@ -79,7 +84,7 @@ impl From<volatile_memory::Error> for Error {
 }
 
 /// Result of guest memory operations.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = result::Result<T, Error>;
 
 impl std::error::Error for Error {}
 
@@ -90,6 +95,12 @@ impl Display for Error {
             Error::InvalidGuestAddress(addr) => {
                 write!(f, "invalid guest address {}", addr.raw_value())
             }
+            Error::InvalidMemoryRegionAddress(region_start_addr, addr) => write!(
+                f,
+                "invalid region address {} in the memory region starting at {}",
+                addr.raw_value(),
+                region_start_addr.raw_value()
+            ),
             Error::IOError(error) => write!(f, "{}", error),
             Error::PartialBuffer {
                 expected,
@@ -101,6 +112,7 @@ impl Display for Error {
             ),
             Error::InvalidBackendAddress => write!(f, "invalid backend address"),
             Error::HostAddressNotAvailable => write!(f, "host virtual address not available"),
+            Error::Overflow => write!(f, "address overflow"),
         }
     }
 }
@@ -115,10 +127,32 @@ impl Display for Error {
 pub struct GuestAddress(pub u64);
 impl_address_ops!(GuestAddress, u64);
 
+/// Wraps a `GuestAddress` that's known to be aligned with respect to `T`.
+pub type AlignedGuestAddress<T> = Aligned<GuestAddress, T>;
+
+impl<T> std::convert::TryFrom<GuestAddress> for AlignedGuestAddress<T> {
+    type Error = AlignmentError;
+
+    fn try_from(other: GuestAddress) -> result::Result<Self, Self::Error> {
+        Self::from_addr(other)
+    }
+}
+
 /// Represents an offset inside a region.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct MemoryRegionAddress(pub u64);
 impl_address_ops!(MemoryRegionAddress, u64);
+
+/// Wraps a `MemoryRegionAddress` that's known to be aligned with respect to `T`.
+pub type AlignedMemoryRegionAddress<T> = Aligned<MemoryRegionAddress, T>;
+
+impl<T> std::convert::TryFrom<MemoryRegionAddress> for AlignedMemoryRegionAddress<T> {
+    type Error = AlignmentError;
+
+    fn try_from(other: MemoryRegionAddress) -> result::Result<Self, Self::Error> {
+        Self::from_addr(other)
+    }
+}
 
 /// Type of the raw value stored in a GuestAddress object.
 pub type GuestUsize = <GuestAddress as AddressValue>::V;
@@ -282,6 +316,32 @@ pub trait GuestMemoryRegion: Bytes<MemoryRegionAddress, E = Error> {
     /// ```
     fn as_volatile_slice(&self) -> Result<volatile_memory::VolatileSlice> {
         self.get_slice(MemoryRegionAddress(0), self.len() as usize)
+    }
+
+    /// Perform an atomic write at the specified address.
+    fn write_atomic<T: AtomicAccess>(
+        &self,
+        val: T,
+        addr: AlignedMemoryRegionAddress<T>,
+    ) -> Result<()>;
+
+    /// Perform an atomic read from the specified address.
+    fn read_atomic<T: AtomicAccess>(&self, addr: AlignedMemoryRegionAddress<T>) -> Result<T>;
+
+    /// Perform an aligned write at the specified address.
+    fn write_aligned<T: ByteValued>(
+        &self,
+        val: T,
+        addr: AlignedMemoryRegionAddress<T>,
+    ) -> Result<()> {
+        // TODO: Currently just calling `write_obj`. We could make use of the additional info.
+        self.write_obj(val, addr.into())
+    }
+
+    /// Peform an aligned read from the specified address.
+    fn read_aligned<T: ByteValued>(&self, addr: AlignedMemoryRegionAddress<T>) -> Result<T> {
+        // TODO: Currently just calling `read_obj`. We could make use of the additional info.
+        self.read_obj(addr.into())
     }
 }
 
@@ -611,6 +671,24 @@ pub trait GuestMemory: Bytes<GuestAddress, E = Error> {
         self.to_region_addr(addr)
             .ok_or_else(|| Error::InvalidGuestAddress(addr))
             .and_then(|(r, addr)| r.get_slice(addr, count))
+    }
+
+    /// Perform an atomic write at the specified address.
+    fn write_atomic<T: AtomicAccess>(&self, val: T, addr: AlignedGuestAddress<T>) -> Result<()>;
+
+    /// Perform an atomic read from the specified address.
+    fn read_atomic<T: AtomicAccess>(&self, addr: AlignedGuestAddress<T>) -> Result<T>;
+
+    /// Perform an aligned write at the specified address.
+    fn write_aligned<T: ByteValued>(&self, val: T, addr: AlignedGuestAddress<T>) -> Result<()> {
+        // TODO: Currently just calling `write_obj`. We could make use of the additional info.
+        self.write_obj(val, addr.into())
+    }
+
+    /// Peform an aligned read from the specified address.
+    fn read_aligned<T: ByteValued>(&self, addr: AlignedGuestAddress<T>) -> Result<T> {
+        // TODO: Currently just calling `read_obj`. We could make use of the additional info.
+        self.read_obj(addr.into())
     }
 }
 

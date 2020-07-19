@@ -13,19 +13,22 @@
 //! This implementation is mmap-ing the memory of the guest into the current process.
 
 use std::borrow::Borrow;
+use std::convert::TryInto;
 use std::error;
 use std::fmt;
 use std::io::{Read, Write};
+use std::mem::size_of;
 use std::ops::Deref;
 use std::result;
 use std::sync::Arc;
 
 use crate::address::Address;
+use crate::bytes::{AtomicAccess, Bytes};
 use crate::guest_memory::{
-    self, FileOffset, GuestAddress, GuestMemory, GuestMemoryRegion, GuestUsize, MemoryRegionAddress,
+    self, AlignedGuestAddress, AlignedMemoryRegionAddress, FileOffset, GuestAddress, GuestMemory,
+    GuestMemoryRegion, GuestUsize, MemoryRegionAddress,
 };
 use crate::volatile_memory::{VolatileMemory, VolatileSlice};
-use crate::Bytes;
 
 #[cfg(unix)]
 pub use crate::mmap_unix::{Error as MmapRegionError, MmapRegion};
@@ -138,6 +141,26 @@ impl GuestRegionMmap {
             mapping,
             guest_base,
         })
+    }
+
+    // Check whether `addr` can be converted into a host pointer that's valid for accesses
+    // with respect to `size_of::<T>` (does not verify alignment).
+    fn check_ptr_access<T>(&self, addr: MemoryRegionAddress) -> guest_memory::Result<*mut T> {
+        let last_byte = addr
+            // The unwrap only fails if `usize` is wider than `u64`.
+            .checked_add(size_of::<T>().try_into().unwrap())
+            .ok_or(guest_memory::Error::Overflow)?;
+
+        if self.address_in_range(last_byte) {
+            // Safe because we've checked the offset is within bounds.
+            let ptr = unsafe { self.as_ptr().offset(addr.raw_value() as isize) };
+            Ok(ptr as *mut T)
+        } else {
+            Err(guest_memory::Error::InvalidMemoryRegionAddress(
+                self.start_addr(),
+                last_byte,
+            ))
+        }
     }
 }
 
@@ -380,6 +403,26 @@ impl GuestMemoryRegion for GuestRegionMmap {
     ) -> guest_memory::Result<VolatileSlice> {
         let slice = self.mapping.get_slice(offset.raw_value() as usize, count)?;
         Ok(slice)
+    }
+
+    fn write_atomic<T: AtomicAccess>(
+        &self,
+        val: T,
+        addr: AlignedMemoryRegionAddress<T>,
+    ) -> guest_memory::Result<()> {
+        let dst = self.check_ptr_access(addr.into())?;
+        // Safe because `dst` is aligned, within bounds, and valid for writes.
+        unsafe { std::ptr::write_volatile(dst, val) };
+        Ok(())
+    }
+
+    fn read_atomic<T: AtomicAccess>(
+        &self,
+        addr: AlignedMemoryRegionAddress<T>,
+    ) -> guest_memory::Result<T> {
+        let src = self.check_ptr_access(addr.into())?;
+        // Safe because `src` is aligned, within bounds, and valid for reads.
+        Ok(unsafe { std::ptr::read_volatile(src) })
     }
 }
 
@@ -798,6 +841,31 @@ impl GuestMemory for GuestMemoryMmap {
             .enumerate()
             .map(|(idx, region)| mapf((idx, region.as_ref())))
             .fold(init, foldf)
+    }
+
+    fn write_atomic<T: AtomicAccess>(
+        &self,
+        val: T,
+        addr: AlignedGuestAddress<T>,
+    ) -> guest_memory::Result<()> {
+        // An aligned atomic access cannot span multiple regions.
+        let (region, region_addr) = self
+            .to_region_addr(addr.into())
+            .ok_or(guest_memory::Error::InvalidGuestAddress(addr.into()))?;
+        // Safe because we know the address is properly aligned.
+        region.write_atomic(val, unsafe { AlignedMemoryRegionAddress::new(region_addr) })
+    }
+
+    fn read_atomic<T: AtomicAccess>(
+        &self,
+        addr: AlignedGuestAddress<T>,
+    ) -> guest_memory::Result<T> {
+        // An aligned atomic access cannot span multiple regions.
+        let (region, region_addr) = self
+            .to_region_addr(addr.into())
+            .ok_or(guest_memory::Error::InvalidGuestAddress(addr.into()))?;
+        // Safe because we know the address is properly aligned.
+        region.read_atomic(unsafe { AlignedMemoryRegionAddress::new(region_addr) })
     }
 }
 

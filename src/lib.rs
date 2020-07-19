@@ -20,7 +20,7 @@
 
 #[macro_use]
 pub mod address;
-pub use address::{Address, AddressValue};
+pub use address::{Address, AddressValue, Aligned, AlignmentError};
 
 pub mod bytes;
 pub use bytes::{ByteValued, Bytes};

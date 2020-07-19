@@ -10,11 +10,12 @@
 
 //! Define the ByteValued trait to mark that it is safe to instantiate the struct with random data.
 
-use crate::VolatileSlice;
 use std::io::{Read, Write};
 use std::mem::size_of;
 use std::result::Result;
 use std::slice::{from_raw_parts, from_raw_parts_mut};
+
+use crate::VolatileSlice;
 
 /// Types for which it is safe to initialize from raw data.
 ///
@@ -152,6 +153,24 @@ byte_valued_type!(i32);
 byte_valued_type!(i64);
 byte_valued_type!(isize);
 
+/// A marker trait used to identify types which can be accessed atomically. We need to add some
+/// more details here, but one important requirement is for types marked with `AtomicAccess` not
+/// to span multiple regions when aligned.
+pub unsafe trait AtomicAccess: ByteValued {}
+
+unsafe impl AtomicAccess for u8 {}
+unsafe impl AtomicAccess for u16 {}
+unsafe impl AtomicAccess for u32 {}
+unsafe impl AtomicAccess for usize {}
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+unsafe impl AtomicAccess for u64 {}
+unsafe impl AtomicAccess for i8 {}
+unsafe impl AtomicAccess for i16 {}
+unsafe impl AtomicAccess for i32 {}
+unsafe impl AtomicAccess for isize {}
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+unsafe impl AtomicAccess for i64 {}
+
 /// A container to host a range of bytes and access its content.
 ///
 /// Candidates which may implement this trait include:
@@ -272,7 +291,8 @@ pub trait Bytes<A> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{ByteValued, Bytes};
+    use super::*;
+
     use std::fmt::Debug;
     use std::io::{Read, Write};
     use std::mem::{align_of, size_of};
