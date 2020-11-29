@@ -18,7 +18,7 @@ use std::slice::{from_raw_parts, from_raw_parts_mut};
 use std::sync::atomic::Ordering;
 
 use crate::atomic_integer::AtomicInteger;
-use crate::VolatileSlice;
+use crate::volatile_memory::VolatileSlice;
 
 /// Types for which it is safe to initialize from raw data.
 ///
@@ -115,10 +115,10 @@ pub unsafe trait ByteValued: Copy + Default + Send + Sync {
     /// reference to `self`; this trivially fulfills `VolatileSlice::new`'s requirement
     /// that all accesses to `self` use volatile accesses (because there can
     /// be no other accesses).
-    fn as_bytes(&mut self) -> VolatileSlice {
+    fn as_bytes(&mut self) -> VolatileSlice<()> {
         unsafe {
             // This is safe because the lifetime is the same as self
-            VolatileSlice::new(self as *mut Self as usize as *mut _, size_of::<Self>())
+            VolatileSlice::new(self as *mut Self as usize as *mut _, size_of::<Self>(), ())
         }
     }
 }
