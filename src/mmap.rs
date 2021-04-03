@@ -177,7 +177,7 @@ impl<B: Bitmap> Bytes<MemoryRegionAddress> for GuestRegionMmap<B> {
     /// # use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
     /// #
     /// # let start_addr = GuestAddress(0x1000);
-    /// # let mut gm = GuestMemoryMmap::from_ranges(&vec![(start_addr, 0x400)])
+    /// # let mut gm = GuestMemoryMmap::<()>::from_ranges(&vec![(start_addr, 0x400)])
     /// #    .expect("Could not create guest memory");
     /// #
     /// let res = gm
@@ -200,7 +200,7 @@ impl<B: Bitmap> Bytes<MemoryRegionAddress> for GuestRegionMmap<B> {
     /// # use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
     /// #
     /// # let start_addr = GuestAddress(0x1000);
-    /// # let mut gm = GuestMemoryMmap::from_ranges(&vec![(start_addr, 0x400)])
+    /// # let mut gm = GuestMemoryMmap::<()>::from_ranges(&vec![(start_addr, 0x400)])
     /// #    .expect("Could not create guest memory");
     /// #
     /// let buf = &mut [0u8; 16];
@@ -243,7 +243,7 @@ impl<B: Bitmap> Bytes<MemoryRegionAddress> for GuestRegionMmap<B> {
     /// # use std::path::Path;
     /// #
     /// # let start_addr = GuestAddress(0x1000);
-    /// # let gm = GuestMemoryMmap::from_ranges(&vec![(start_addr, 0x400)])
+    /// # let gm = GuestMemoryMmap::<()>::from_ranges(&vec![(start_addr, 0x400)])
     /// #    .expect("Could not create guest memory");
     /// # let addr = GuestAddress(0x1010);
     /// # let mut file = if cfg!(unix) {
@@ -288,7 +288,7 @@ impl<B: Bitmap> Bytes<MemoryRegionAddress> for GuestRegionMmap<B> {
     /// # use std::path::Path;
     /// #
     /// # let start_addr = GuestAddress(0x1000);
-    /// # let gm = GuestMemoryMmap::from_ranges(&vec![(start_addr, 0x400)])
+    /// # let gm = GuestMemoryMmap::<()>::from_ranges(&vec![(start_addr, 0x400)])
     /// #    .expect("Could not create guest memory");
     /// # let addr = GuestAddress(0x1010);
     /// # let mut file = if cfg!(unix) {
@@ -335,7 +335,7 @@ impl<B: Bitmap> Bytes<MemoryRegionAddress> for GuestRegionMmap<B> {
     /// # use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
     /// #
     /// # let start_addr = GuestAddress(0x1000);
-    /// # let gm = GuestMemoryMmap::from_ranges(&vec![(start_addr, 0x400)])
+    /// # let gm = GuestMemoryMmap::<()>::from_ranges(&vec![(start_addr, 0x400)])
     /// #    .expect("Could not create guest memory");
     /// # let mut file = if cfg!(unix) {
     /// # use std::fs::OpenOptions;
@@ -380,7 +380,7 @@ impl<B: Bitmap> Bytes<MemoryRegionAddress> for GuestRegionMmap<B> {
     /// # use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
     /// #
     /// # let start_addr = GuestAddress(0x1000);
-    /// # let gm = GuestMemoryMmap::from_ranges(&vec![(start_addr, 0x400)])
+    /// # let gm = GuestMemoryMmap::<()>::from_ranges(&vec![(start_addr, 0x400)])
     /// #    .expect("Could not create guest memory");
     /// # let mut file = if cfg!(unix) {
     /// # use std::fs::OpenOptions;
